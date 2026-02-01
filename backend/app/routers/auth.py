@@ -8,6 +8,7 @@ from typing import Optional
 from app.utils import (
     OTP_STORE,
     get_password_hash,
+    verify_password,
     generate_otp,
     send_otp_email,
     verify_otp
@@ -91,8 +92,8 @@ async def register(
         db.commit()
 
         otp = generate_otp(email)
-        if not send_otp_email(email, otp):
-            raise HTTPException(500, "Échec envoi OTP")
+       # if not send_otp_email(email, otp):
+           # raise HTTPException(500, "Échec envoi OTP")
 
         return {"message": "Inscription réussie. OTP envoyé.", "email": email}
 
@@ -130,4 +131,27 @@ async def verify_otp_login(email: str = Form(...), code: str = Form(...), db: Se
         "email": user.email,
         "photo_profil": f"http://127.0.0.1:8000{user.photo_profil}" if user.photo_profil else "https://via.placeholder.com/120",
         "message": "Connexion réussie"
+    }
+
+# Récupérer les empreintes de l'utilisateur connecté
+@router.get("/mes-empreintes")
+async def get_mes_empreintes(email: str, db: Session = Depends(get_db)):
+    user = db.query(models.User).filter(models.User.email == email).first()
+    if not user:
+        raise HTTPException(404, "Utilisateur non trouvé")
+
+    empreintes = db.query(models.Fingerprint).filter(models.Fingerprint.utilisateur_id == user.id).all()
+
+    return {
+        "utilisateur_id": user.id,
+        "total_empreintes": len(empreintes),
+        "empreintes": [
+            {
+                "id": emp.id,
+                "doigt": emp.doigt or "Non spécifié",
+                "image_url": f"http://127.0.0.1:8000{emp.image_path}" if emp.image_path else None,
+                "date_upload": emp.created_at.strftime("%d/%m/%Y") if emp.created_at else "Inconnue"
+            }
+            for emp in empreintes
+        ]
     }

@@ -8,7 +8,7 @@ export default function Home() {
     <div className="d-flex flex-column min-vh-100">
       <Header />
 
-{/* TITRE SUR L'IMAGE */}
+      {/* TITRE SUR L'IMAGE */}
       <div className="title-bg-image">
         <div className="title-content">
           <h1 className="display-4 fw-bold text-white">
@@ -28,16 +28,10 @@ export default function Home() {
         <div className="container">
           {/* Boutons */}
           <div className="row justify-content-center mb-5">
-            <div className="col-md-4 mb-4">
-              <a href="/register" className="btn btn-blue-night btn-lg w-100 d-flex align-items-center justify-content-center gap-2">
-                <UserPlus size={24} />
-                Commencer l’inscription
-              </a>
-            </div>
-            <div className="col-md-4 mb-4">
-              <a href="/login" className="btn btn-outline-blue-night btn-lg w-100 d-flex align-items-center justify-content-center gap-2">
-                <LogIn size={24} />
-                Se connecter
+            <div className="col-md-6 mb-4">
+              <a href="/dashboard" className="btn btn-blue-night btn-lg w-100 d-flex align-items-center justify-content-center gap-2">
+                <Shield size={24} />
+                Accéder au Tableau de Bord
               </a>
             </div>
           </div>

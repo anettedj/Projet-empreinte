@@ -1,0 +1,4 @@
+-Installation de opencv
+pip install numpy==1.26.4 --no-cache-dir (dans venv)
+pip install opencv-python-headless==4.9.0.80 --no-cache-dir
+python -c "import cv2; print(cv2.__version__)" (pou tester)
