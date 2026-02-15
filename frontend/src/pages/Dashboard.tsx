@@ -11,6 +11,8 @@ import {
   CheckCircle,
   Loader2
 } from 'lucide-react';
+import UTIF from 'utif';
+
 
 type MenuItem = 'compare' | 'search' | 'process';
 
@@ -24,6 +26,7 @@ export default function Dashboard() {
   // Prévisualisations en base64
   const [comparePreviews, setComparePreviews] = useState<(string | null)[]>([null, null]);
   const [searchPreview, setSearchPreview] = useState<string | null>(null);
+  const [searchPerformed, setSearchPerformed] = useState<boolean>(false);
 
   // Pour le traitement d'image
   const [processedImage, setProcessedImage] = useState<any | null>(null);
@@ -35,55 +38,110 @@ export default function Dashboard() {
   const [searchResults, setSearchResults] = useState<any[]>([]);
   const [isComparing, setIsComparing] = useState(false);
   const [isSearching, setIsSearching] = useState(false);
-  const [showDetails, setShowDetails] = useState(false); // NOUVEAU: État pour afficher les détails
+  const [showDetails, setShowDetails] = useState(false);
 
 
   // Refs
   const compareRef1 = useRef<HTMLInputElement>(null);
   const compareRef2 = useRef<HTMLInputElement>(null);
   const searchRef = useRef<HTMLInputElement>(null);
-  const processRef = useRef<HTMLInputElement>(null);
 
   // Chargement de l'utilisateur
 
 
-  // Fonction universelle de chargement (marche à 100%)
-  const handleFile = (e: React.ChangeEvent<HTMLInputElement>, index?: number) => {
+  // Fonction universelle de chargement avec support TIF
+  const handleFile = async (e: React.ChangeEvent<HTMLInputElement>, index?: number) => {
     const file = e.target.files?.[0];
     if (!file) return;
 
-    const reader = new FileReader();
-    reader.onload = () => {
-      const result = reader.result as string;
+    // Vérifier si c'est un fichier TIFF
+    const isTiff = file.name.toLowerCase().endsWith('.tif') || file.name.toLowerCase().endsWith('.tiff');
 
-      if (index !== undefined) {
-        setComparePreviews(prev => {
-          const arr = [...prev];
-          arr[index] = result;
-          return arr;
-        });
-        setCompareFiles(prev => {
-          const arr = [...prev];
-          arr[index] = file;
-          return arr;
-        });
-      } else {
-        setSearchPreview(result);
-        setSearchFile(file);
+    if (isTiff) {
+      try {
+        // Lire le fichier comme ArrayBuffer
+        const arrayBuffer = await file.arrayBuffer();
+
+        // Décoder le TIFF
+        const ifds = UTIF.decode(arrayBuffer);
+        UTIF.decodeImage(arrayBuffer, ifds[0]);
+
+        // Créer un canvas
+        const canvas = document.createElement('canvas');
+        const rgba = UTIF.toRGBA8(ifds[0]);
+
+        canvas.width = ifds[0].width;
+        canvas.height = ifds[0].height;
+
+        const ctx = canvas.getContext('2d');
+        if (!ctx) throw new Error('Cannot get canvas context');
+
+        const imageData = ctx.createImageData(canvas.width, canvas.height);
+        imageData.data.set(rgba);
+        ctx.putImageData(imageData, 0, 0);
+
+        // Convertir le canvas en data URL (PNG)
+        const dataUrl = canvas.toDataURL('image/png');
+
+        // Mettre à jour l'état
+        if (index !== undefined) {
+          setComparePreviews(prev => {
+            const arr = [...prev];
+            arr[index] = dataUrl;
+            return arr;
+          });
+          setCompareFiles(prev => {
+            const arr = [...prev];
+            arr[index] = file;
+            return arr;
+          });
+        } else {
+          setSearchPreview(dataUrl);
+          setSearchFile(file);
+        }
+      } catch (error) {
+        console.error('Erreur lors de la conversion TIFF:', error);
+        alert(`Erreur TIFF: ${error instanceof Error ? error.message : 'Erreur inconnue'}`);
       }
-    };
-    reader.readAsDataURL(file);
+    } else {
+      // Comportement normal pour JPG/PNG
+      const reader = new FileReader();
+      reader.onload = () => {
+        const result = reader.result as string;
+
+        if (index !== undefined) {
+          setComparePreviews(prev => {
+            const arr = [...prev];
+            arr[index] = result;
+            return arr;
+          });
+          setCompareFiles(prev => {
+            const arr = [...prev];
+            arr[index] = file;
+            return arr;
+          });
+        } else {
+          setSearchPreview(result);
+          setSearchFile(file);
+        }
+      };
+      reader.readAsDataURL(file);
+    }
   };
 
   const launchComparison = async () => {
-    if (!compareFiles[0] || !compareFiles[1]) return;
+    console.log("launchComparison: Clicked");
+    if (!compareFiles[0] || !compareFiles[1]) {
+      console.warn("launchComparison: Missing files", compareFiles);
+      return;
+    }
 
     setIsComparing(true);
     setCompareResult(null);
 
     const formData = new FormData();
-    formData.append("file1", compareFiles[0]!, "empreinte1.jpg");
-    formData.append("file2", compareFiles[1]!, "empreinte2.jpg");
+    formData.append("file1", compareFiles[0]!);
+    formData.append("file2", compareFiles[1]!);
 
     try {
       const res = await fetch("http://127.0.0.1:8000/compare/", {
@@ -99,8 +157,11 @@ export default function Dashboard() {
       }
 
       const data = await res.json();
+      console.log("launchComparison: Result", data);
       setCompareResult(data);
     } catch (err) {
+      console.error("launchComparison: Network Error", err);
+      alert("Erreur réseau lors de la comparaison. Vérifiez que le backend tourne sur http://127.0.0.1:8000");
       setCompareResult({ similarity: 0, verdict: "Serveur hors ligne" });
     } finally {
       setIsComparing(false);
@@ -108,22 +169,33 @@ export default function Dashboard() {
   };
 
   const launchSearch = async () => {
-    if (!searchFile) return;
+    console.log("launchSearch: Clicked");
+    if (!searchFile) {
+      console.warn("launchSearch: No search file selected");
+      return;
+    }
     setIsSearching(true);
     setSearchResults([]);
+    setSearchPerformed(false);
 
     const formData = new FormData();
-    formData.append("fingerprint", searchFile);
+    formData.append('file', searchFile);
 
     try {
-      const res = await fetch("http://127.0.0.1:8000/search/", {
-        method: "POST",
-        body: formData
+      console.log("Sending search request...");
+      const response = await fetch('http://127.0.0.1:8000/search/', {
+        method: 'POST',
+        body: formData,
       });
-      const data = await res.json();
+      const data = await response.json();
+      console.log("launchSearch: Result", data);
       setSearchResults(data.matches || []);
-    } catch {
+      setSearchPerformed(true);
+    } catch (error) {
+      console.error("launchSearch: Error", error);
+      alert("Erreur lors de la recherche base de données.");
       setSearchResults([]);
+      setSearchPerformed(true); // Indicate search finished, even if with error
     } finally {
       setIsSearching(false);
     }
@@ -131,7 +203,11 @@ export default function Dashboard() {
 
   // TRAITEMENT & ANALYSE DÉTAILLÉE (NOUVEAU)
   const launchProcess = async () => {
-    if (!compareFiles[0] || !compareFiles[1]) return;
+    console.log("launchProcess: Clicked");
+    if (!compareFiles[0] || !compareFiles[1]) {
+      console.warn("launchProcess: Missing files");
+      return;
+    }
 
     setIsProcessing(true);
     setProcessedImage(null); // Will store the JSON object now
@@ -142,6 +218,7 @@ export default function Dashboard() {
     formData.append("stage", processStage);
 
     try {
+      console.log("Sending process request...", processStage);
       // Note: On appelle /analyze maintenant
       const res = await fetch("http://127.0.0.1:8000/process/analyze", {
         method: "POST",
@@ -151,6 +228,7 @@ export default function Dashboard() {
       if (!res.ok) throw new Error("Erreur traitement");
 
       const data = await res.json();
+      console.log("launchProcess: Result", data);
       // data contains: image1_processed, image2_processed, match_visualization, stats
       setProcessedImage(data as any);
     } catch (err) {
@@ -161,10 +239,12 @@ export default function Dashboard() {
     }
   };
 
-  // Nettoyage des URL blob
+  // Nettoyage des URL blob (seulement si c'est une string/blob URL)
   useEffect(() => {
     return () => {
-      if (processedImage) URL.revokeObjectURL(processedImage);
+      if (processedImage && typeof processedImage === 'string') {
+        URL.revokeObjectURL(processedImage);
+      }
     };
   }, [processedImage]);
 
@@ -184,7 +264,10 @@ export default function Dashboard() {
                 <li key={item.id}>
                   <button
                     className={`menu-btn w-100 text-start ${activeMenu === item.id ? 'active' : ''}`}
-                    onClick={() => setActiveMenu(item.id as MenuItem)}
+                    onClick={() => {
+                      console.log("Menu switch to:", item.id);
+                      setActiveMenu(item.id as MenuItem);
+                    }}
                   >
                     <item.icon size={20} className="me-2" />
                     {item.label}
@@ -207,7 +290,6 @@ export default function Dashboard() {
               <h1 className="h3 fw-bold text-blue-night">
                 {activeMenu === 'compare' && 'Comparer deux empreintes'}
                 {activeMenu === 'search' && 'Rechercher dans la base'}
-                {activeMenu === 'process' && "Traitement d'image"}
                 {activeMenu === 'process' && "Traitement d'image"}
               </h1>
             </div>
@@ -339,7 +421,10 @@ export default function Dashboard() {
                     accept="image/*"
                     hidden
                     ref={searchRef}
-                    onChange={(e) => handleFile(e)}
+                    onChange={(e) => {
+                      handleFile(e);
+                      setSearchPerformed(false);
+                    }}
                   />
                   {searchPreview ? (
                     <div>
@@ -385,8 +470,15 @@ export default function Dashboard() {
                 )}
 
                 {/* === RÉSULTATS + DIAGRAMME === */}
-                {searchResults.length > 0 && (
+
+
+                {searchPerformed && (
                   <div className="search-results">
+                    {searchResults.length === 0 && (
+                      <div className="alert alert-warning text-center fw-bold">
+                        ⚠️ Aucun résultat trouvé dans la base de données.
+                      </div>
+                    )}
 
                     <h4 className="mb-4 text-blue-night fw-bold">Résultats trouvés</h4>
 
@@ -573,7 +665,7 @@ export default function Dashboard() {
 
                 {/* COLONNE DROITE : RÉSULTATS VISUALISÉS */}
                 <div className="col-md-8">
-                  {processedImage ? (
+                  {processedImage && typeof processedImage === 'object' ? (
                     <div className="d-flex flex-column gap-4">
 
                       {/* LIGNE 1: COMPARAISON CÔTE À CÔTE */}
@@ -581,13 +673,13 @@ export default function Dashboard() {
                         <div className="col-6">
                           <div className="bg-white p-3 rounded-3 shadow-sm text-center h-100">
                             <h6 className="fw-bold text-muted mb-2">Image 1 Traitée ({processStage})</h6>
-                            <img src={(processedImage as any).image1_processed} className="img-fluid rounded border" alt="Proc 1" />
+                            <img src={(processedImage as any)?.image1_processed || ''} className="img-fluid rounded border" alt="Proc 1" />
                           </div>
                         </div>
                         <div className="col-6">
                           <div className="bg-white p-3 rounded-3 shadow-sm text-center h-100">
                             <h6 className="fw-bold text-muted mb-2">Image 2 Traitée ({processStage})</h6>
-                            <img src={(processedImage as any).image2_processed} className="img-fluid rounded border" alt="Proc 2" />
+                            <img src={(processedImage as any)?.image2_processed || ''} className="img-fluid rounded border" alt="Proc 2" />
                           </div>
                         </div>
                       </div>
@@ -599,7 +691,7 @@ export default function Dashboard() {
                           Les lignes vertes relient les caractéristiques identiques trouvées sur les deux images traitées.
                         </p>
                         <img
-                          src={(processedImage as any).match_visualization}
+                          src={(processedImage as any)?.match_visualization || ''}
                           className="img-fluid rounded-3 border border-2 border-emerald"
                           style={{ maxHeight: '400px' }}
                           alt="Preuve"
@@ -608,16 +700,16 @@ export default function Dashboard() {
                         <div className="row mt-4 pt-3 border-top">
                           <div className="col-4 border-end">
                             <div className="text-muted small text-uppercase fw-bold">Points Communs</div>
-                            <div className="fs-2 fw-black text-emerald">{(processedImage as any).stats.matches}</div>
+                            <div className="fs-2 fw-black text-emerald">{(processedImage as any)?.stats?.matches || 0}</div>
                           </div>
                           <div className="col-8">
                             <div className="text-muted small text-uppercase fw-bold">Score de Similitude</div>
-                            <div className="display-6 fw-black text-blue-night">{(processedImage as any).stats.score}%</div>
+                            <div className="display-6 fw-black text-blue-night">{(processedImage as any)?.stats?.score || 0}%</div>
                             <div className="progress mt-2" style={{ height: '6px' }}>
                               <div
                                 className="progress-bar bg-emerald"
                                 role="progressbar"
-                                style={{ width: `${(processedImage as any).stats.score}%` }}
+                                style={{ width: `${(processedImage as any)?.stats?.score || 0}%` }}
                               ></div>
                             </div>
                           </div>

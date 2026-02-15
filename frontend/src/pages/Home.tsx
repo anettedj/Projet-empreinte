@@ -1,7 +1,7 @@
 // src/pages/Home.tsx
 import Header from '../components/Header';
 import Footer from '../components/Footer';
-import { Upload, Search, Shield, UserPlus, LogIn } from 'lucide-react';
+import { Upload, Search, Shield } from 'lucide-react';
 
 export default function Home() {
   return (

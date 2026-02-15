@@ -6,187 +6,244 @@ import matplotlib.pyplot as plt
 from tqdm import tqdm
 import itertools
 import random
-from app.utils.manual_algo import manual_grayscale, manual_median_filter, manual_binarize, manual_thinning, extract_minutiae, manual_match
+import json
+from matplotlib.ticker import MultipleLocator
+from datetime import datetime
+from app.utils.manual_algo import complete_preprocessing_pipeline, manual_match
 
 # Configuration
-DATASET_DIR = "images/fvc/DB4_B"
+DATASET_ROOT = "images/fvc"
 OUTPUT_DIR = "metrics_output"
+CONFIG_DIR = "config"
+DATASET_DIRS = [
+    "DB1_B", "DB3_B", "DB4_B", 
+    "DB1_B(1)", "DB2_B(1)", "DB3_B(1)", "DB4_B(1)", "DB3_Bj"
+]
 
-if not os.path.exists(OUTPUT_DIR):
-    os.makedirs(OUTPUT_DIR)
+for d in [OUTPUT_DIR, CONFIG_DIR]:
+    if not os.path.exists(d):
+        os.makedirs(d)
 
 def get_person_id(filename):
-    # FVC Format expected: 101_1.tif -> Person ID 101
-    basename = os.path.basename(filename)
-    name, ext = os.path.splitext(basename)
-    parts = name.split('_')
-    if len(parts) >= 1:
-        return parts[0]
-    return name
+    name = os.path.splitext(os.path.basename(filename))[0]
+    return name.split('_')[0]
 
-# Cache pour les minuties (pour ne pas re-traiter chaque image à chaque comparaison)
+# Cache pour les minuties
+MINUTIAE_CACHE_FILE = os.path.join(CONFIG_DIR, "minutiae_cache.json")
 minutiae_cache = {}
+
+if os.path.exists(MINUTIAE_CACHE_FILE):
+    try:
+        with open(MINUTIAE_CACHE_FILE, "r") as f:
+            # Convert keys back to string (paths) and values to tuples
+            minutiae_cache = json.load(f)
+    except:
+        minutiae_cache = {}
+
+def save_minutiae_cache():
+    with open(MINUTIAE_CACHE_FILE, "w") as f:
+        json.dump(minutiae_cache, f)
 
 def get_manual_minutiae(path):
     if path in minutiae_cache:
+        # JSON convertit les listes, on doit les transformer en tuples pour manual_match si besoin
+        # Mais manual_match accepte des listes, donc on garde tel quel
         return minutiae_cache[path]
     
     img = cv2.imread(path)
     if img is None: return None
     
-    # Resize pour la vitesse (Indispensable pour le Zhang-Suen manuel en Python)
-    img = cv2.resize(img, (150, 180)) 
+    # Utiliser le pipeline complet
+    m, s = complete_preprocessing_pipeline(img)
     
-    # Pipeline manuel
-    gray = manual_grayscale(img)
-    filtered = manual_median_filter(gray)
-    binary = manual_binarize(filtered, invert=True)
-    skeleton = manual_thinning(binary)
-    m = extract_minutiae(skeleton)
-    
-    minutiae_cache[path] = m
-    return m
+    # Stocker sous forme de listes pour JSON
+    minutiae_cache[path] = [m[0], m[1]]
+    return minutiae_cache[path]
 
 def compute_metrics():
-    print(f"Scanning dataset in {DATASET_DIR}...")
-    files = glob.glob(os.path.join(DATASET_DIR, "*.tif"))
+    print(f"====================================================")
+    print(f"📊 CALCUL DES MÉTRIQUES BIOMÉTRIQUES (FAR/FRR)")
+    print(f"====================================================")
+    
+    print(f"🔍 Scan des bases de données...")
+    files = []
+    for d in DATASET_DIRS:
+        d_path = os.path.join(DATASET_ROOT, d)
+        if os.path.exists(d_path):
+            found = glob.glob(os.path.join(d_path, "*.tif"))
+            print(f"  • {d}: {len(found)} images")
+            files.extend(found)
     
     if len(files) == 0:
-        files = glob.glob(os.path.join(DATASET_DIR, "**", "*.tif"), recursive=True)
+        print("❌ Aucune image .tif trouvée.")
+        return
 
-    if len(files) == 0:
-        print(" Image non trouvée...")
-        files = glob.glob(os.path.join(DATASET_DIR, "*.*"))
-        files = [f for f in files if f.lower().endswith(('.tif', '.jpg', '.png', '.bmp'))]
-
-    print(f" Found {len(files)} images.")
-
+    print(f"\n✅ Total images: {len(files)}")
     files.sort()
 
-    genuine_scores = []
-    impostor_scores = []
-    
+    # Grouper par dataset + personne
     persons = {}
     for f in files:
         pid = get_person_id(f)
-        if pid not in persons:
-            persons[pid] = []
-        persons[pid].append(f)
+        db = os.path.basename(os.path.dirname(f))
+        key = f"{db}_{pid}"
+        if key not in persons:
+            persons[key] = []
+        persons[key].append(f)
 
-    print("Generating pairs...")
-    
+    # Générer les paires
     genuine_pairs = []
-    for pid, img_list in persons.items():
+    for key, img_list in persons.items():
         pairs = list(itertools.combinations(img_list, 2))
         genuine_pairs.extend(pairs)
 
     impostor_pairs = []
-    person_ids = list(persons.keys())
-    target_impostor_count = 1000 # Un peu moins pour la vitesse
+    person_keys = list(persons.keys())
+    # On limite pour la vitesse mais on garde une validité statistique
+    target_impostor_count = min(2000, len(files) * 2) 
     
     while len(impostor_pairs) < target_impostor_count:
-        id1, id2 = random.sample(person_ids, 2)
-        img1 = random.choice(persons[id1])
-        img2 = random.choice(persons[id2])
+        k1, k2 = random.sample(person_keys, 2)
+        if k1 == k2: continue
+        img1 = random.choice(persons[k1])
+        img2 = random.choice(persons[k2])
         impostor_pairs.append((img1, img2))
 
-    print(f"Pairs generated: {len(genuine_pairs)} Genuine | {len(impostor_pairs)} Impostor")
+    print(f"📈 Paires générées: {len(genuine_pairs)} Authentiques | {len(impostor_pairs)} Imposteurs")
     
-    print("Running comparisons (MANUAL PIPELINE)...")
+    # Prétraitement
+    print("\n⚙️  Prétraitement des images (Pipeline 10 étapes)...")
+    try:
+        count = 0
+        for f in tqdm(files):
+            get_manual_minutiae(f)
+            count += 1
+            if count % 50 == 0:
+                save_minutiae_cache()
+    finally:
+        save_minutiae_cache()
+        print("\n💾 Cache des minuties sauvegardé (intermédiaire/final).")
+
+    # Comparaisons (avec cache disque et log détaillé)
+    cache_file = os.path.join(CONFIG_DIR, "scores_cache.json")
+    log_file = os.path.join(OUTPUT_DIR, "detailed_comparisons.csv")
     
-    # 1. Prétraiter toutes les images pour remplir le cache
-    print("Preprocessing images...")
-    for f in tqdm(files):
-        get_manual_minutiae(f)
-
-    # 2. Exécuter Authentiques
-    print("--- Processing Genuine ---")
-    for img1, img2 in tqdm(genuine_pairs):
-        m1 = get_manual_minutiae(img1)
-        m2 = get_manual_minutiae(img2)
-        if m1 and m2:
-            score, _ = manual_match(m1, m2)
-            genuine_scores.append(score)
-
-    # 3. Exécuter Imposteurs
-    print("--- Processing Impostor ---")
-    for img1, img2 in tqdm(impostor_pairs):
-        m1 = get_manual_minutiae(img1)
-        m2 = get_manual_minutiae(img2)
-        if m1 and m2:
-            score, _ = manual_match(m1, m2)
-            impostor_scores.append(score)
-
-    # Calcul des métriques
-    thresholds = np.arange(0, 101, 1) # 0 to 100
-    frr_list = []
-    far_list = []
+    import csv
     
+    if os.path.exists(cache_file):
+        print("\n📂 Chargement des scores depuis le cache...")
+        with open(cache_file, "r") as f:
+            data = json.load(f)
+            genuine_scores = data["genuine"]
+            impostor_scores = data["impostor"]
+    else:
+        genuine_scores = []
+        impostor_scores = []
+        
+        with open(log_file, mode='w', newline='', encoding='utf-8') as csvfile:
+            log_writer = csv.writer(csvfile)
+            log_writer.writerow(['Type', 'Database', 'Image 1', 'Image 2', 'Matches', 'Total Minutiae', 'Score (%)'])
+            
+            print("\n🔄 Exécution des comparaisons (Authentiques)...")
+            for img1, img2 in tqdm(genuine_pairs, desc="Authentiques"):
+                m1 = get_manual_minutiae(img1)
+                m2 = get_manual_minutiae(img2)
+                if m1 and m2:
+                    score, matches = manual_match(m1, m2)
+                    genuine_scores.append(score)
+                    total_min = (len(m1[0])+len(m1[1])) + (len(m2[0])+len(m2[1]))
+                    db_name = os.path.basename(os.path.dirname(img1))
+                    log_writer.writerow(['Genuine', db_name, os.path.basename(img1), os.path.basename(img2), matches, total_min, score])
+
+            print("\n🔄 Exécution des comparaisons (Imposteurs)...")
+            for img1, img2 in tqdm(impostor_pairs, desc="Imposteurs"):
+                m1 = get_manual_minutiae(img1)
+                m2 = get_manual_minutiae(img2)
+                if m1 and m2:
+                    score, matches = manual_match(m1, m2)
+                    impostor_scores.append(score)
+                    total_min = (len(m1[0])+len(m1[1])) + (len(m2[0])+len(m2[1]))
+                    db_name = os.path.basename(os.path.dirname(img1))
+                    log_writer.writerow(['Impostor', db_name, os.path.basename(img1), os.path.basename(img2), matches, total_min, score])
+        
+        # Sauvegarder scores pour re-plotting rapide
+        with open(cache_file, "w") as f:
+            json.dump({"genuine": genuine_scores, "impostor": impostor_scores}, f)
+        print(f"✅ Log détaillé sauvegardé dans {log_file}")
+
+    # Statistiques
     genuine_scores = np.array(genuine_scores)
     impostor_scores = np.array(impostor_scores)
+    
+    thresholds = np.arange(0, 101, 1)
+    frr_list = []
+    far_list = []
 
     for t in thresholds:
-        # FRR = Ratio des scores Authentiques SOUS le seuil
-        # (Devraient être acceptés, mais ont été rejetés)
-        fr_count = np.sum(genuine_scores < t)
-        frr = (fr_count / len(genuine_scores)) * 100 if len(genuine_scores) > 0 else 0
+        frr = (np.sum(genuine_scores < t) / len(genuine_scores)) * 100
+        far = (np.sum(impostor_scores >= t) / len(impostor_scores)) * 100
         frr_list.append(frr)
-
-        # FAR = Ratio des scores Imposteurs AU-DESSUS du seuil
-        # (Devraient être rejetés, mais ont été acceptés)
-        fa_count = np.sum(impostor_scores >= t)
-        far = (fa_count / len(impostor_scores)) * 100 if len(impostor_scores) > 0 else 0
         far_list.append(far)
 
-    # Trouver l'EER (Taux d'erreur égal) où le FAR croise le FRR
-    # Utiliser la différence min simple
+    # EER
     diffs = np.abs(np.array(frr_list) - np.array(far_list))
     eer_idx = np.argmin(diffs)
     eer_threshold = thresholds[eer_idx]
     eer_value = (frr_list[eer_idx] + far_list[eer_idx]) / 2
 
-    print(f"\n ANALYSIS COMPLETE")
-    print(f"Genuine Scores: Avg={np.mean(genuine_scores):.2f}, Max={np.max(genuine_scores):.2f}, Min={np.min(genuine_scores):.2f}")
-    print(f"Impostor Scores: Avg={np.mean(impostor_scores):.2f}, Max={np.max(impostor_scores):.2f}, Min={np.min(impostor_scores):.2f}")
-    print(f"Optimal Threshold (EER Point): {eer_threshold}")
-    print(f"EER Value (approx error rate): {eer_value:.2f}%")
-    print(f"At this threshold: FRR={frr_list[eer_idx]:.2f}%, FAR={far_list[eer_idx]:.2f}%")
+    print(f"\n====================================================")
+    print(f"🎯 RÉSULTATS DE L'ANALYSE")
+    print(f"====================================================")
+    print(f"• Score Authentique Moyen: {np.mean(genuine_scores):.2f}%")
+    print(f"• Score Imposteur Moyen:   {np.mean(impostor_scores):.2f}%")
+    print(f"• SEUIL OPTIMAL (EER):    {eer_threshold}%")
+    print(f"• VALEUR EER:             {eer_value:.2f}%")
+    print(f"====================================================")
 
-    # Tracé FRR/FAR vs Seuil
-    plt.figure(figsize=(10, 6))
-    plt.plot(thresholds, frr_list, label='Taux de Faux Rejet (FRR)', color='red', linewidth=2)
-    plt.plot(thresholds, far_list, label='Taux de Fausse Acceptation (FAR)', color='blue', linewidth=2)
-    plt.axvline(x=eer_threshold, color='green', linestyle='--', label=f'Optimal Threshold ({eer_threshold})')
-    plt.xlabel('Threshold (Score 0-100)')
-    plt.ylabel('Taux d erreur (%)')
-    plt.title('Performance Metrics: FRR vs FAR')
-    plt.legend()
-    plt.grid(True)
-    plt.savefig(os.path.join(OUTPUT_DIR, 'frr_far_curves.png'))
-    print(f"Graph saved to {OUTPUT_DIR}/frr_far_curves.png")
+    # Sauvegarde config
+    optimal_config = {
+        "threshold": float(eer_threshold),
+        "eer": float(eer_value),
+        "avg_genuine": float(np.mean(genuine_scores)),
+        "avg_impostor": float(np.mean(impostor_scores)),
+        "date": datetime.now().isoformat(),
+        "raw_data": {
+            "thresholds": thresholds.tolist(),
+            "frr": frr_list,
+            "far": far_list
+        }
+    }
+    with open(os.path.join(CONFIG_DIR, "optimal_threshold.json"), "w") as f:
+        json.dump(optimal_config, f, indent=2)
 
-    # Tracé Courbe ROC
-    # ROC est typiquement GAR (Taux d'Acceptation Authentique = 1 - FRR) vs FAR
-    gar_list = [100 - x for x in frr_list]
+    # Graphs
+    plt.figure(figsize=(24, 10)) # Plus large pour accommoder toutes les graduations
+    plt.plot(thresholds, frr_list, label='FRR (Faux Rejet)', color='red', linewidth=2)
+    plt.plot(thresholds, far_list, label='FAR (Fausse Acceptation)', color='blue', linewidth=2)
     
-    plt.figure(figsize=(10, 6))
-    plt.plot(far_list, gar_list, color='purple', linewidth=2)
-    plt.plot([0, 100], [0, 100], color='gray', linestyle='--') 
-    plt.xlabel('False Acceptance Rate (FAR) %')
-    plt.ylabel('Genuine Acceptance Rate (GAR) %')
-    plt.title('ROC Curve')
-    plt.xlim([0, 20]) 
-    plt.ylim([80, 100])
-    plt.grid(True)
-    plt.savefig(os.path.join(OUTPUT_DIR, 'roc_curve.png'))
-    print(f"ROC Graph saved to {OUTPUT_DIR}/roc_curve.png")
+    # Seuil EER
+    plt.axvline(x=eer_threshold, color='green', linestyle='--', alpha=0.7)
+    plt.text(eer_threshold+0.5, eer_value+2, f'EER: {eer_threshold}%', color='green', weight='bold')
+
+    # Graduations à pas de 1
+    ax = plt.gca()
+
+    ax.xaxis.set_major_locator(MultipleLocator(1))   # Force pas = 1
+    ax.set_xticks(np.arange(0, 101, 1))              # Imposer toutes les positions
+    ax.tick_params(axis='x', labelrotation=90, labelsize=8)
+
+    plt.yticks(np.arange(0, 101, 5))
+
+    
+    plt.xlabel('Seuil de Score (%) - Pas de 1', fontsize=12, labelpad=10)
+    plt.ylabel('Taux d erreur (%)', fontsize=12)
+    plt.title('Courbes FAR / FRR - Graduation Détaillée (Pas = 1)', fontsize=14, weight='bold')
+    plt.legend(fontsize=12)
+    plt.grid(True, which='both', linestyle=':', alpha=0.6)
+    
+    plt.tight_layout()
+    plt.savefig(os.path.join(OUTPUT_DIR, 'far_frr_curves.png'), dpi=150)
+    print(f"\n✅ Graphique détaillé sauvegardé dans {OUTPUT_DIR}")
 
 if __name__ == "__main__":
-    try:
-        compute_metrics()
-    except ImportError as e:
-        print("Missing required libraries. Installing them...")
-        os.system("pip install matplotlib tqdm")
-        print("Please rerun the script.")
-    except Exception as e:
-        print(f"An error occurred: {e}")
+    compute_metrics()

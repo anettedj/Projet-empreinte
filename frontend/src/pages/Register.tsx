@@ -1,6 +1,6 @@
 // src/pages/Register.tsx
 import { useState } from 'react';
-import { User, Mail, Lock, Upload, Fingerprint, X } from 'lucide-react';
+import { User, Mail, Lock, Upload, Fingerprint } from 'lucide-react';
 import Header from '../components/Header';
 import Footer from '../components/Footer';
 
@@ -101,18 +101,18 @@ export default function Register() {
         method: 'POST',
         body: data
       });
-const result = await res.json();
+      const result = await res.json();
 
-if (res.ok) {
-  setMessage({ type: 'success', text: 'Inscription réussie ! Un code OTP a été envoyé à votre email.' });
-  setTimeout(() => window.location.href = '/login', 2000);
-} else {
-  // Au lieu de result.detail, utilise JSON.stringify si c'est un objet
-  const errorText = typeof result.detail === 'string'
-    ? result.detail
-    : JSON.stringify(result.detail);
-  setMessage({ type: 'error', text: errorText || 'Erreur lors de l’inscription.' });
-}
+      if (res.ok) {
+        setMessage({ type: 'success', text: 'Inscription réussie ! Un code OTP a été envoyé à votre email.' });
+        setTimeout(() => window.location.href = '/login', 2000);
+      } else {
+        // Au lieu de result.detail, utilise JSON.stringify si c'est un objet
+        const errorText = typeof result.detail === 'string'
+          ? result.detail
+          : JSON.stringify(result.detail);
+        setMessage({ type: 'error', text: errorText || 'Erreur lors de l’inscription.' });
+      }
 
     } catch (err) {
       setMessage({ type: 'error', text: 'Erreur de connexion au serveur.' });
@@ -208,9 +208,8 @@ if (res.ok) {
                     {DOIGTS.map((doigt, i) => (
                       <div key={i} className="col-6 col-md-3">
                         <div
-                          className={`border rounded p-3 text-center position-relative ${
-                            dragOver === i ? 'border-blue-night bg-light' : 'border-dashed'
-                          }`}
+                          className={`border rounded p-3 text-center position-relative ${dragOver === i ? 'border-blue-night bg-light' : 'border-dashed'
+                            }`}
                           onDragOver={(e) => { e.preventDefault(); setDragOver(i); }}
                           onDragLeave={() => setDragOver(null)}
                           onDrop={(e) => handleDrop(e, i)}

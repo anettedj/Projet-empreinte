@@ -10,6 +10,11 @@ def manual_grayscale(img_bgr):
     # img_bgr[:,:,0] -> Blue
     # img_bgr[:,:,1] -> Green
     # img_bgr[:,:,2] -> Red
+    
+    # Si l'image est déjà en niveaux de gris (2D), on la retourne telle quelle
+    if len(img_bgr.shape) == 2:
+        return img_bgr.astype(np.uint8)
+        
     blue = img_bgr[:, :, 0].astype(np.float32)
     green = img_bgr[:, :, 1].astype(np.float32)
     red = img_bgr[:, :, 2].astype(np.float32)
@@ -37,19 +42,48 @@ def manual_median_filter(img, size=3):
             
     return output
 
-def manual_binarize(img, threshold=None, invert=True):
+def manual_gabor(img):
     """
-    Convertit l'image en Noir et Blanc (Binaire).
-    invert=True: considère que les crêtes sont plus sombres que le fond (standard FVC).
+    Applique un filtre de Gabor pour renforcer les crêtes.
     """
-    if threshold is None:
-        # Otsu simplifié : utiliser la moyenne
-        threshold = np.mean(img)
+    # Paramètres de Gabor (à ajuster pour les empreintes)
+    ksize = 31
+    sigma = 5.0
+    theta = 0 # Orientation (on pourrait tester plusieurs)
+    lambd = 10.0
+    gamma = 0.5
+    psi = 0
+    
+    # On applique 4 filtres (0, 45, 90, 135 degrés) et on prend le max
+    filters = []
+    for theta in np.arange(0, np.pi, np.pi / 4):
+        kern = cv2.getGaborKernel((ksize, ksize), sigma, theta, lambd, gamma, psi, ktype=cv2.CV_32F)
+        filters.append(kern)
+        
+    accum = np.zeros_like(img, dtype=np.float32)
+    for kern in filters:
+        fimg = cv2.filter2D(img, cv2.CV_32F, kern)
+        np.maximum(accum, fimg, accum)
+        
+    return accum.astype(np.uint8)
+
+def manual_binarize(img, invert=True):
+    """
+    Convertit l'image en Binaire avec seuillage adaptatif.
+    Plus robuste aux variations d'illumination que le seuillage global.
+    """
+    # Flou gaussien pour lisser les crêtes avant binarisation
+    blurred = cv2.GaussianBlur(img, (5, 5), 0)
+    
+    # Utilisation d'OpenCV pour le seuillage adaptatif (mais on reste dans l'esprit "manuel" du pipeline)
+    binary = cv2.adaptiveThreshold(
+        blurred, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, 
+        cv2.THRESH_BINARY, 11, 2
+    )
     
     if invert:
-        binary = np.where(img < threshold, 255, 0).astype(np.uint8)
-    else:
-        binary = np.where(img >= threshold, 255, 0).astype(np.uint8)
+        binary = cv2.bitwise_not(binary)
+        
     return binary
 
 def manual_thinning(binary):
@@ -125,94 +159,221 @@ def extract_minutiae(skeleton):
     rows, cols = skeleton.shape
     skel = skeleton // 255  # 0 et 1
     
-    terminations = []
-    bifurcations = []
+    raw_terminations = []
+    raw_bifurcations = []
     
     for i in range(1, rows - 1):
         for j in range(1, cols - 1):
             if skel[i, j] != 1: continue
             
             # Voisins (ordre horaire)
-            # P9 P2 P3
-            # P8 P1 P4
-            # P7 P6 P5
-            P2 = skel[i-1, j]
-            P3 = skel[i-1, j+1]
-            P4 = skel[i, j+1]
-            P5 = skel[i+1, j+1]
-            P6 = skel[i+1, j]
-            P7 = skel[i+1, j-1]
-            P8 = skel[i, j-1]
-            P9 = skel[i-1, j-1]
+            P2, P3, P4 = skel[i-1, j], skel[i-1, j+1], skel[i, j+1]
+            P5, P6, P7 = skel[i+1, j+1], skel[i+1, j], skel[i+1, j-1]
+            P8, P9 = skel[i, j-1], skel[i-1, j-1]
             
-            neighbors = [int(P2), int(P3), int(P4), int(int(P5)), int(P6), int(P7), int(P8), int(P9)]
+            neighbors = [int(P2), int(P3), int(P4), int(P5), int(P6), int(P7), int(P8), int(P9)]
             
-            # Crossing Number
             cn = 0
             for k in range(8):
                 cn += abs(neighbors[k] - neighbors[(k + 1) % 8])
             cn = 0.5 * cn
             
             if cn == 1:
-                terminations.append((j, i))  # (x, y)
+                raw_terminations.append((j, i))  # (x, y)
             elif cn == 3:
-                bifurcations.append((j, i)) # (x, y)
+                raw_bifurcations.append((j, i)) # (x, y)
+    
+    # --- Filtrage Avancé des Fausses Minuties ---
+    # 1. Supprimer les minuties trop proches les unes des autres (bruit de squelettisation)
+    def dist(p1, p2):
+        return np.sqrt((p1[0] - p2[0])**2 + (p1[1] - p2[1])**2)
+    
+    filtered_term = []
+    for i, t1 in enumerate(raw_terminations):
+        keep = True
+        for j, t2 in enumerate(raw_terminations):
+            if i != j and dist(t1, t2) < 10: # Espacement standard
+                keep = False
+                break
+        if keep: filtered_term.append(t1)
+        
+    filtered_bif = []
+    for i, b1 in enumerate(raw_bifurcations):
+        keep = True
+        for j, b2 in enumerate(raw_bifurcations):
+            if i != j and dist(b1, b2) < 10: # Espacement standard
+                keep = False
+                break
+        if keep: filtered_bif.append(b1)
                 
-    return terminations, bifurcations
+    return filtered_term, filtered_bif
 
-def manual_match(minutiae1, minutiae2, tolerance=10):
+def normalize_image(img, target_size=(300, 300)):
+    """Normalise la taille et les valeurs de pixels."""
+    img_resized = cv2.resize(img, target_size)
+    # Normalisation Min-Max pour étendre la dynamique
+    img_norm = cv2.normalize(img_resized, None, 0, 255, cv2.NORM_MINMAX)
+    return img_norm
+
+def enhance_contrast(img):
+    """Améliore le contraste local avec CLAHE."""
+    # CLAHE est plus efficace que l'égalisation d'histogramme globale pour les empreintes
+    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8,8))
+    return clahe.apply(img)
+
+def segment_fingerprint(img, block_size=16, threshold_var=100):
     """
-    Compare deux ensembles de minuties manuellement.
-    minutiae = (terminations, bifurcations)
-    tolerance = distance maximale en pixels pour considérer un match.
+    Segmente l'empreinte pour isoler la région d'intérêt (ROI).
+    Utilise la variance locale pour détecter les zones avec des crêtes.
+    """
+    rows, cols = img.shape
+    mask = np.zeros((rows, cols), dtype=np.uint8)
+    
+    # Calculer la variance par blocs
+    for i in range(0, rows - block_size + 1, block_size):
+        for j in range(0, cols - block_size + 1, block_size):
+            block = img[i:i+block_size, j:j+block_size]
+            variance = np.var(block)
+            
+            # Si la variance est élevée, c'est une zone d'empreinte (Foregound)
+            if variance > threshold_var:
+                mask[i:i+block_size, j:j+block_size] = 255
+    
+    # Nettoyage du masque avec morphologie
+    kernel = np.ones((5,5), np.uint8)
+    mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
+    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
+    
+    return mask
+
+def morphological_operations(binary):
+    """
+    Nettoie l'image binaire pour supprimer le bruit et combler les trous.
+    """
+    kernel = np.ones((3,3), np.uint8)
+    # Ouverture : supprime les petits points blancs isolés
+    opening = cv2.morphologyEx(binary, cv2.MORPH_OPEN, kernel)
+    # Fermeture : comble les petits trous noirs dans les crêtes
+    closing = cv2.morphologyEx(opening, cv2.MORPH_CLOSE, kernel)
+    return closing
+
+def filter_border_minutiae(minutiae, img_shape, border=15):
+    """
+    Supprime les minuties détectées trop près des bords de l'image ou du masque.
+    Elles sont souvent de faux positifs dus à la segmentation.
+    """
+    rows, cols = img_shape
+    term, bif = minutiae
+    
+    def is_valid(p):
+        x, y = p
+        return border < x < cols - border and border < y < rows - border
+    
+    f_term = [p for p in term if is_valid(p)]
+    f_bif = [p for p in bif if is_valid(p)]
+    
+    return f_term, f_bif
+
+def complete_preprocessing_pipeline(img_bgr):
+    """
+    Pipeline complet de prétraitement biométrique (10 étapes).
+    """
+    # 1. Conversion en niveaux de gris
+    gray = manual_grayscale(img_bgr)
+    
+    # 2. Normalisation (taille et dynamique)
+    norm = normalize_image(gray)
+    
+    # 3. Amélioration contraste (CLAHE)
+    enhanced = enhance_contrast(norm)
+    
+    # 4. Segmentation (ROI)
+    mask = segment_fingerprint(enhanced)
+    
+    # 5. Application du masque
+    segmented = cv2.bitwise_and(enhanced, enhanced, mask=mask)
+    
+    # 6. Filtrage du bruit (Médian)
+    filtered = manual_median_filter(segmented)
+    
+    # 7. Binarisation (Adaptative simplifiée)
+    binary = manual_binarize(filtered, invert=True)
+    
+    # 8. Nettoyage morphologique
+    cleaned = morphological_operations(binary)
+    
+    # 9. Squelettisation (Zhang-Suen)
+    skeleton = manual_thinning(cleaned)
+    
+    # 10. Extraction des minuties (Crossing Number)
+    raw_minutiae = extract_minutiae(skeleton)
+    
+    # 11. Filtrage des fausses minuties (bords)
+    filtered_minutiae = filter_border_minutiae(raw_minutiae, skeleton.shape)
+    
+    return filtered_minutiae, skeleton
+
+def manual_match(minutiae1, minutiae2, tolerance=8):
+    """
+    Matching robuste avec validation de voisinage et support de rotation légère.
     """
     term1, bif1 = minutiae1
     term2, bif2 = minutiae2
-    
-    if not term1 and not bif1: return 0.0, 0
-    if not term2 and not bif2: return 0.0, 0
-
-    # 1. Alignement par Centroïde (pour gérer la translation de base)
-    def get_centroid(points):
-        if not points: return (0, 0)
-        x = sum(p[0] for p in points) / len(points)
-        y = sum(p[1] for p in points) / len(points)
-        return (x, y)
-
     all1 = term1 + bif1
     all2 = term2 + bif2
     
-    c1 = get_centroid(all1)
-    c2 = get_centroid(all2)
-    
-    # Calcul du vecteur de translation
-    dx = c1[0] - c2[0]
-    dy = c1[1] - c2[1]
-    
-    # 2. Matching avec Bounding Box
-    def count_matches(list1, list2, off_x, off_y):
-        matches = 0
-        matched_in_2 = set()
-        for p1 in list1:
-            for idx, p2 in enumerate(list2):
-                if idx in matched_in_2: continue
-                
-                # Appliquer la translation à p2 pour le ramener vers p1
-                p2_aligned = (p2[0] + off_x, p2[1] + off_y)
-                
-                dist = np.sqrt((p1[0] - p2_aligned[0])**2 + (p1[1] - p2_aligned[1])**2)
-                if dist < tolerance:
-                    matches += 1
-                    matched_in_2.add(idx)
-                    break
-        return matches
+    if len(all1) < 5 or len(all2) < 5:
+        return 0.0, 0
 
-    match_term = count_matches(term1, term2, dx, dy)
-    match_bif = count_matches(bif1, bif2, dx, dy)
+    def rotate_point(p, angle_deg, center=(150, 150)):
+        if angle_deg == 0: return p
+        angle_rad = np.radians(angle_deg)
+        ox, oy = center
+        px, py = p
+        qx = ox + np.cos(angle_rad) * (px - ox) - np.sin(angle_rad) * (py - oy)
+        qy = oy + np.sin(angle_rad) * (px - ox) + np.cos(angle_rad) * (py - oy)
+        return (qx, qy)
+
+    def get_neighbors(p, others, count=3):
+        dists = [np.sqrt((p[0]-o[0])**2 + (p[1]-o[1])**2) for o in others if o != p]
+        return sorted(dists)[:count]
+
+    neigh1 = [get_neighbors(p, all1) for p in all1]
     
-    total_matches = match_term + match_bif
+    best_matches = 0
     
-    # Score : On normalise par rapport à la moyenne des points
-    score = (2.0 * total_matches) / (len(all1) + len(all2)) * 100
-    
-    return round(score, 2), total_matches
+    # Tester quelques angles
+    for angle in [-5, 0, 5]:
+        rot_all2 = [rotate_point(p, angle) for p in all2]
+        rot_term2 = [rotate_point(p, angle) for p in term2]
+        rot_bif2 = [rotate_point(p, angle) for p in bif2]
+        neigh2 = [get_neighbors(p, rot_all2) for p in rot_all2]
+        
+        for i, p1 in enumerate(all1[:12]):
+            for j, p2 in enumerate(rot_all2[:12]):
+                n1, n2 = neigh1[i], neigh2[j]
+                if len(n1) == len(n2) and len(n1) > 0:
+                    sim = sum(1 for d1, d2 in zip(n1, n2) if abs(d1 - d2) < 5)
+                    if sim < 1: continue 
+                
+                tx, ty = p1[0] - p2[0], p1[1] - p2[1]
+                
+                def count_valid(l1, lr2, ox, oy):
+                    m = 0
+                    u = [False] * len(lr2)
+                    for pt1 in l1:
+                        for k, pt2 in enumerate(lr2):
+                            if not u[k]:
+                                p2a = (pt2[0] + ox, pt2[1] + oy)
+                                if np.sqrt((pt1[0]-p2a[0])**2 + (pt1[1]-p2a[1])**2) < tolerance:
+                                    m += 1
+                                    u[k] = True
+                                    break
+                    return m
+
+                total = count_valid(term1, rot_term2, tx, ty) + count_valid(bif1, rot_bif2, tx, ty)
+                if total > best_matches:
+                    best_matches = total
+
+    score = (2.0 * best_matches) / (len(all1) + len(all2)) * 100
+    return round(score, 2), best_matches

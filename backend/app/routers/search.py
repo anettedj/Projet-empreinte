@@ -12,72 +12,102 @@ router = APIRouter(prefix="/search", tags=["Recherche"])
 DATABASE_URL = "mysql+pymysql://root:@localhost/empreintes_db"
 engine = create_engine(DATABASE_URL)
 
-def preprocess_image(path):
-    # Lecture en niveau de gris
-    img = cv2.imread(path, cv2.IMREAD_GRAYSCALE)
-    if img is None:
-        return None, None
-        
-    # Amélioration CLAHE
-    clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8,8))
-    img = clahe.apply(img)
-    
-    # ORB Detector
-    orb = cv2.ORB_create(nfeatures=2000)
-    kp, desc = orb.detectAndCompute(img, None)
-    return kp, desc
+from app.utils.manual_algo import complete_preprocessing_pipeline, manual_match
+import json
 
-def compare_descriptors(desc1, desc2):
-    if desc1 is None or desc2 is None or len(desc1) < 5 or len(desc2) < 5:
-        return 0.0
+# Charger le seuil (par défaut 20%)
+CONFIG_PATH = "config/optimal_threshold.json"
+def get_threshold():
+    if os.path.exists(CONFIG_PATH):
+        try:
+            with open(CONFIG_PATH, "r") as f:
+                return json.load(f).get("threshold", 20.0)
+        except:
+            return 20.0
+    return 20.0
 
-    # BFMatcher avec NORM_HAMMING
-    bf = cv2.BFMatcher(cv2.NORM_HAMMING, crossCheck=False) # On utilise kNN
-    matches = bf.knnMatch(desc1, desc2, k=2)
+# Charger le cache des minuties pour accélérer la recherche
+MINUTIAE_CACHE_FILE = "config/minutiae_cache.json"
+minutiae_cache = {}
 
-    good_matches = []
-    for match in matches:
-        if len(match) == 2:
-            m, n = match
-            # Lowe's ratio test stricter (0.7)
-            if m.distance < 0.75 * n.distance:
-                good_matches.append(m)
+if os.path.exists(MINUTIAE_CACHE_FILE):
+    try:
+        with open(MINUTIAE_CACHE_FILE, "r") as f:
+            raw_cache = json.load(f)
+            # Normaliser les clés du cache pour une recherche insensible aux séparateurs
+            for k, v in raw_cache.items():
+                norm_k = os.path.normpath(k).replace("\\", "/")
+                minutiae_cache[norm_k] = v
+        print(f"✅ Cache minuties chargé et normalisé: {len(minutiae_cache)} images")
+    except Exception as e:
+        print(f"⚠️ Erreur chargement cache: {e}")
+
+def get_minutiae_for_search(path):
+    """Extrait les minuties (depuis le cache si dispo, sinon calcul)."""
+    # Normalisation du chemin input
+    norm_path = os.path.normpath(path).replace("\\", "/")
     
-    # Calcul score basé sur le nombre de matches vs le nombre total de features du query
-    # C'est plus robuste que de diviser par une constante
-    
-    score = 0
-    if len(desc1) > 0:
-        score = (len(good_matches) / len(desc1)) * 100.0
+    # Stratégies de recherche dans le cache
+    keys_to_try = [norm_path, os.path.basename(norm_path)]
+    parts = norm_path.split("/")
+    if len(parts) >= 2:
+        heuristic = f"images/fvc/{parts[-2]}/{parts[-1]}"
+        keys_to_try.append(heuristic)
         
-    # Bonus pour le nombre absolu de matches (pour éviter les faux positifs sur très peu de features)
-    if len(good_matches) < 10:
-        score = 0 # Trop peu de correspondance pour être fiable
-        
-    # Scale le score pour qu'il soit plus lisible (ex: 20% de features matchées = tres bon score)
-    # On va dire que 40% de match = 100% score affiché
-    final_similarity = min(100.0, score * 2.5) 
+    # Essayer de changer l'extension (.jpg -> .tif) pour le cache
+    base, ext = os.path.splitext(norm_path)
+    if ext.lower() == '.jpg':
+        keys_to_try.append(base + '.tif')
+        if len(parts) >= 2:
+             keys_to_try.append(heuristic.replace('.jpg', '.tif'))
     
-    return final_similarity
+    # 1. Recherche exacte ou relative
+    if norm_path in minutiae_cache:
+        return minutiae_cache[norm_path]
+    
+    # 2. Recherche par suffixe (pour gérer les différences abs/rel)
+    for k in minutiae_cache:
+        if norm_path.endswith(k) or k.endswith(norm_path):
+            return minutiae_cache[k]
+
+    print(f"⚠️ Cache miss pour: {path} (Norm: {norm_path}), calcul en cours...")
+    
+    # Si pas dans le cache, on calcule
+    img = cv2.imread(path)
+    if img is None: 
+        print(f"❌ Erreur lecture image: {path}")
+        return None
+        
+    try:
+        minutiae, _ = complete_preprocessing_pipeline(img)
+        return minutiae
+    except Exception as e:
+        print(f"❌ Erreur pipeline pour {path}: {e}")
+        return None
 
 @router.post("/")
-async def search_fingerprint(fingerprint: UploadFile = File(...)):
+def search_fingerprint(file: UploadFile = File(...)):
     import uuid
     import traceback
 
+    # NOTE: On utilise 'def' au lieu de 'async def' pour ne pas bloquer l'évent loop
+    # avec les calculs CPU intensifs (matching de 800 images). FastAPI gérera ça dans un pool.
+
     # Sauvegarde temporaire avec UUID pour éviter les conflits
-    file_ext = fingerprint.filename.split(".")[-1]
+    file_ext = file.filename.split(".")[-1]
     unique_id = str(uuid.uuid4())
     temp_filename = f"temp_{unique_id}.{file_ext}"
 
     try:
         with open(temp_filename, "wb") as f:
-            f.write(await fingerprint.read())
+            # On lit en synchrone via .file.read()
+            f.write(file.file.read())
 
         # Extraction query
-        kp_q, desc_q = preprocess_image(temp_filename)
+        m_q = get_minutiae_for_search(temp_filename)
+        threshold = get_threshold()
         
-        if desc_q is None:
+        if m_q is None:
             return {"matches": []}
 
         best_results = []
@@ -85,7 +115,7 @@ async def search_fingerprint(fingerprint: UploadFile = File(...)):
         # 1. Récupérer toutes les empreintes de la BDD
         with engine.connect() as conn:
             # On joint pour avoir les infos user direct
-            # CORRECTION: Suppression de u.prenom qui n'existe pas
+            # CORRECTION: On utilise empreintes_db (le .env dit ça, et le test confirme)
             query = text("""
                 SELECT e.image_path, e.utilisateur_id, u.nom, u.photo_profil
                 FROM empreinte e
@@ -102,21 +132,26 @@ async def search_fingerprint(fingerprint: UploadFile = File(...)):
             db_path = row.image_path
             
             # Correction des chemins absolue/relatif si nécessaire
-            full_path = db_path
-            if not os.path.isabs(full_path):
-                # Essayer de résoudre par rapport au dossier courant ou static
-                candidates = [
-                    os.path.abspath(db_path),
-                    os.path.join(os.getcwd(), db_path),
-                    os.path.join(os.getcwd(), "uploads", "fingerprints", os.path.basename(db_path)),
-                    db_path.replace("//", "/")
+            # ET gestion de l'extension (.jpg dans la DB vs .tif sur le disque)
+            candidates = [db_path]
+            if db_path.endswith('.jpg'): candidates.append(db_path.replace('.jpg', '.tif'))
+            if db_path.endswith('.tif'): candidates.append(db_path.replace('.tif', '.jpg'))
+            
+            full_path = None
+            for cand in candidates:
+                # Tester plusieurs racines
+                test_paths = [
+                    cand,
+                    os.path.abspath(cand),
+                    os.path.join(os.getcwd(), cand),
+                    os.path.join(os.getcwd(), "app", cand),
+                    os.path.join(os.getcwd(), "images", "fvc", os.path.basename(cand)) 
                 ]
-                
-                full_path = None
-                for c in candidates:
-                    if os.path.exists(c):
-                        full_path = c
+                for tp in test_paths:
+                    if os.path.exists(tp):
+                        full_path = tp
                         break
+                if full_path: break
                 
                 if full_path is None:
                     # print(f"DEBUG: File not found {db_path}")
@@ -126,21 +161,30 @@ async def search_fingerprint(fingerprint: UploadFile = File(...)):
                 # print(f"DEBUG: File not found {full_path}")
                 continue # Fichier introuvable
 
-            kp_db, desc_db = preprocess_image(full_path)
-            if desc_db is None:
-                # print(f"DEBUG: Failed to process {full_path}")
+            if not os.path.exists(full_path):
+                # print(f"DEBUG: File not found {full_path}")
+                continue # Fichier introuvable
+
+            # Utiliser la nouvelle fonction d'extraction
+            m_db = get_minutiae_for_search(full_path)
+            if m_db is None:
+                # print(f"SKIP: No minutiae for {full_path}")
                 continue
 
-            similarity = compare_descriptors(desc_q, desc_db)
+            # Utiliser le nouveau matching manuel
+            score, _ = manual_match(m_q, m_db)
+            
+            # DEBUG
+            # if score > 0: print(f"MATCH: {db_path} => {score}%")
 
-            if similarity > 5: # Filtre mini
+            if score >= 5: # Filtre mini (très bas pour laisser passer les candidats)
                 uid = row.utilisateur_id
-                if uid not in user_scores or similarity > user_scores[uid]["similarity"]:
+                if uid not in user_scores or score > user_scores[uid]["similarity"]:
                     user_scores[uid] = {
                         "nom": row.nom,
-                        # "prenom": getattr(row, 'prenom', ''), # REMOVED
+                        # "prenom": getattr(row, 'prenom', ''), 
                         "photo_profil": row.photo_profil,
-                        "similarity": similarity
+                        "similarity": score
                     }
 
         # 3. Formatter résultats

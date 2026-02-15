@@ -1,0 +1,101 @@
+DOCUMENTATION TECHNIQUE : PIPELINE DE RECONNAISSANCE D'EMPREINTES (COMPLÈTE)
+
+Ce document précise les emplacements du code, les algorithmes utilisés, ainsi que les principes mathématiques, la structure de la base de données et les métriques du projet.
+
+--------------------------------------------------------------------------------
+1. LOCALISATION DE L'IMPLÉMENTATION
+--------------------------------------------------------------------------------
+
+LOGIQUE CŒUR (ALGORITHMES MANUELS)
+Fichier : backend/app/utils/manual_algo.py
+Contient les fonctions pures : manual_grayscale, manual_median_filter, manual_binarize, manual_thinning (Zhang-Suen), extract_minutiae (Crossing Number), manual_match.
+
+EXPOSITION API (FRONTEND ET GABOR)
+Fichier : backend/app/routers/process.py
+- Endpoint "/process/" : Traitement visuel étape par étape.
+- Filtrage de Gabor complexe avant binarisation.
+
+SYSTÈME ROBUSTE (SIFT/ORB)
+Fichier : backend/app/utils/fingerprint_matcher.py
+- Utilise des algorithmes de vision par ordinateur avancés (SIFT, RANSAC).
+
+CALCUL DES PERFORMANCES (MÉTRIQUES)
+Fichier : backend/compute_metrics.py
+- Génération des graphiques FAR/FRR/ROC et calcul de l'EER.
+
+--------------------------------------------------------------------------------
+2. INVENTAIRE DES ALGORITHMES ET FONDEMENTS MATHÉMATIQUES
+--------------------------------------------------------------------------------
+
+SECTION A : PRÉTRAITEMENT ET RESTAURATION
+
+1. Conversion en Niveaux de Gris (Grayscale)
+   - Principe : Pondération physiologique des couleurs (Y = 0.299*R + 0.587*G + 0.114*B).
+
+2. Filtre Médian (Bruit Impulsionnel)
+   - Mathématiques : I(x,y) = median{I(i,j) | (i,j) ∈ W}. Supprime les points aberrants.
+
+3. Égalisation Adaptative (CLAHE)
+   - Mathématiques : Histogramme local avec limitation du contraste (Clip Limit).
+
+4. Banque de Filtres de Gabor
+   - Formule : Convolution avec un noyau directionnel accordé sur la fréquence des crêtes.
+
+SECTION B : SEGMENTATION ET EXTRACTION
+
+5. Seuillage d'Otsu (Binarisation)
+   - Principe : Minimisation de la variance intra-classe pour trouver le seuil T optimal.
+
+6. Amincissement de Zhang-Suen (Thinning)
+   - Algorithme : Processus itératif basé sur la connectivité-8 (Conditions A(P) et B(P)).
+
+7. Crossing Number (CN)
+   - Formule : 0.5 * Σ |P_i - P_{i+1}|. (CN=1: Terminaison, CN=3: Bifurcation).
+
+SECTION C : COMPARAISON ET GÉOMÉTRIE (MATCHING)
+
+8. SIFT / RANSAC
+   - Mathématiques : Homographie et élimination des points incohérents par consensus aléatoire.
+
+--------------------------------------------------------------------------------
+3. STRUCTURE DE LA BASE DE DONNÉES (SQL)
+--------------------------------------------------------------------------------
+
+Le système est relié à une base de données MariaDB (`empreintes_db`) contenant 2 tables principales :
+
+TABLE : `utilisateur`
+- Rôle : Stocke les informations des personnes.
+- Champs : `id`, `nom`, `email`, `password`, `photo_profil`.
+- Données actuelles : 108 utilisateurs enregistrés (Adjo, Koffi, Aminata, etc.).
+
+TABLE : `empreinte`
+- Rôle : Associe les images aux utilisateurs et stocke les résultats d'analyse.
+- Champs : 
+    - `id` : Identifiant unique.
+    - `utilisateur_id` : Clé étrangère vers l'utilisateur.
+    - `image_path` : Chemin vers le fichier (ex: `images/fvc/DB1_B/101_1.jpg`).
+    - `doigt` : Label du doigt (doigt1, doigt2...).
+    - `minutiae_data` : (TEXT) Destiné à stocker les coordonnées des points extraits.
+    - `match_percentage` : Dernier score de correspondance calculé.
+
+--------------------------------------------------------------------------------
+4. ANALYSE DES MÉTRIQUES ET DÉTAILS DU DATASET
+--------------------------------------------------------------------------------
+
+DÉTAILS DU DATASET (FVC 2004)
+- Taille totale : 80 images enregistrées en base de données.
+- Classes : 10 individus (Personnes ID 101 à 110).
+- Captures : 8 images par individu (Ex: 101_1 à 101_8).
+- Dossier Source Base : `images/fvc/DB1_B` (utilisé dans le dump SQL).
+- Dossier Test Métriques : `images/fvc/DB4_B` (utilisé dans compute_metrics.py).
+  > Note : Les deux bases (DB1_B et DB4_B) sont des standards FVC mais peuvent présenter des qualités d'image différentes.
+
+ANALYSE DE L'EER (66%) ET SOLUTIONS
+- Cause : Instabilité de l'alignement par Centroïde face au bruit.
+- Solutions : Intégrer RANSAC dans le pipeline manuel et ajouter une étape d'élagage (pruning) pour nettoyer les squelettes.
+
+--------------------------------------------------------------------------------
+5. RÉFÉRENCE BIBLIOGRAPHIQUE
+--------------------------------------------------------------------------------
+
+"Handbook of Fingerprint Recognition" (Maltoni, Maio, Jain, Prabhakar) - Springer.

@@ -23,64 +23,64 @@ export default function Login() {
     }
   };
 
-const handleSubmitEmail = async (e: React.FormEvent) => {
-  e.preventDefault();
-  setLoading(true);
+  const handleSubmitEmail = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setLoading(true);
 
-  try {
-    const response = await fetch("http://127.0.0.1:8000/auth/login", {
-      method: "POST",
-      headers: { "Content-Type": "application/x-www-form-urlencoded" },
-      body: new URLSearchParams({ email, password }),
-    });
+    try {
+      const response = await fetch("http://127.0.0.1:8000/auth/login", {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body: new URLSearchParams({ email, password }),
+      });
 
-    const data = await response.json();
+      const data = await response.json();
 
-    if (response.ok) {
-      localStorage.setItem("loginEmail", email); // on sauvegarde l'email
-      setStep("otp");
-    } else {
-      alert(data.detail || "Erreur de connexion");
+      if (response.ok) {
+        localStorage.setItem("loginEmail", email); // on sauvegarde l'email
+        setStep("otp");
+      } else {
+        alert(data.detail || "Erreur de connexion");
+      }
+    } catch (err) {
+      alert("Impossible de contacter le serveur");
+    } finally {
+      setLoading(false);
     }
-  } catch (err) {
-    alert("Impossible de contacter le serveur");
-  } finally {
-    setLoading(false);
-  }
-};
+  };
 
-const handleSubmitOtp = async (e: React.FormEvent) => {
-  e.preventDefault();
-  const code = otp.join("");
+  const handleSubmitOtp = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const code = otp.join("");
 
-  if (code.length !== 6) return;
+    if (code.length !== 6) return;
 
-  setLoading(true);
+    setLoading(true);
 
-  try {
-    const response = await fetch("http://127.0.0.1:8000/auth/verify-otp", {
-      method: "POST",
-      headers: { "Content-Type": "application/x-www-form-urlencoded" },
-      body: new URLSearchParams({
-        email: localStorage.getItem("loginEmail") || "",
-        code,
-      }),
-    });
+    try {
+      const response = await fetch("http://127.0.0.1:8000/auth/verify-otp", {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body: new URLSearchParams({
+          email: localStorage.getItem("loginEmail") || "",
+          code,
+        }),
+      });
 
-    const userData = await response.json();
+      const userData = await response.json();
 
-    if (response.ok) {
-      localStorage.setItem("currentUser", JSON.stringify(userData));
-      window.location.href = "/dashboard";
-    } else {
-      alert(userData.detail || "Code incorrect");
+      if (response.ok) {
+        localStorage.setItem("currentUser", JSON.stringify(userData));
+        window.location.href = "/dashboard";
+      } else {
+        alert(userData.detail || "Code incorrect");
+      }
+    } catch (err) {
+      alert("Erreur réseau");
+    } finally {
+      setLoading(false);
     }
-  } catch (err) {
-    alert("Erreur réseau");
-  } finally {
-    setLoading(false);
-  }
-};
+  };
 
   return (
     <div className="d-flex flex-column min-vh-100">

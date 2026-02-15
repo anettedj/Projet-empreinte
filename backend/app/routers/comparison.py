@@ -5,73 +5,83 @@ import cv2
 import numpy as np
 import os
 import base64
-from app.utils.fingerprint_matcher import align_and_match_fingerprints
+from app.utils.manual_algo import complete_preprocessing_pipeline, manual_match
+import json
 
 router = APIRouter(prefix="/compare", tags=["Comparaison Biométrique"])
+
+# Charger le seuil optimal (par défaut 20% si non calculé)
+CONFIG_PATH = "config/optimal_threshold.json"
+def get_threshold():
+    if os.path.exists(CONFIG_PATH):
+        try:
+            with open(CONFIG_PATH, "r") as f:
+                return json.load(f).get("threshold", 20.0)
+        except:
+            return 20.0
+    return 20.0
 
 # Dossier temporaire pour les uploads
 TEMP_DIR = "temp_uploads"
 os.makedirs(TEMP_DIR, exist_ok=True)
 
 @router.post("/")
-async def compare_fingerprints(
+def compare_fingerprints(
     file1: UploadFile = File(...),
     file2: UploadFile = File(...)
 ):
-    if not file1.filename.lower().endswith(('png', 'jpg', 'jpeg', 'bmp')) or \
-       not file2.filename.lower().endswith(('png', 'jpg', 'jpeg', 'bmp')):
-        raise HTTPException(400, "Format d'image non supporté")
-
     # Sauvegarde temporaire
     path1 = os.path.join(TEMP_DIR, f"temp1_{file1.filename}")
     path2 = os.path.join(TEMP_DIR, f"temp2_{file2.filename}")
 
     try:
-        # Écriture des fichiers
+        # Écriture des fichiers (synchrone)
         with open(path1, "wb") as f:
-            f.write(await file1.read())
+            f.write(file1.file.read())
         with open(path2, "wb") as f:
-            f.write(await file2.read())
+            f.write(file2.file.read())
 
-        # UTILISATION DU MATCHING UNIFIÉ (OFFICIEL)
-        result = align_and_match_fingerprints(path1, path2)
+        # Chargement images
+        img1 = cv2.imread(path1)
+        img2 = cv2.imread(path2)
         
-        similarity = result["score"]
-        matches = result["match_count"]
+        if img1 is None or img2 is None:
+            raise HTTPException(400, "Image invalide ou format non supporté")
+
+        # PIPELINE BIOMÉTRIQUE MANUEL (OFFICIEL)
+        minutiae1, skel1 = complete_preprocessing_pipeline(img1)
+        minutiae2, skel2 = complete_preprocessing_pipeline(img2)
         
-        # Interprétation - C'est ici qu'on fait la nuance
-        # Si le score est faible (ex: 40%) MAIS qu'il y a beaucoup de correspondances (>15),
-        # c'est une "Correspondance Partielle (Identité Probable)".
+        # Matching robuste
+        score, matches = manual_match(minutiae1, minutiae2)
         
-        if similarity > 80:
-            verdict = "Identité confirmée (Image Identique)"
-        elif matches > 15: # Forensic Standard : 12-15 points suffisent
-            verdict = "Identité confirmée (Image Partielle/Modifiée)"
-        elif similarity > 50:
-            verdict = "Correspondance Probable"
-        elif similarity > 25:
-            verdict = "Correspondance Faible"
+        # Décision basée sur le seuil optimal
+        threshold = get_threshold()
+        
+        if score >= threshold:
+            verdict = "Identité confirmée"
+            decision_code = "MATCH"
         else:
-            verdict = "Pas de correspondance"
+            verdict = "Identité rejetée"
+            decision_code = "NO_MATCH"
 
-        # Conversion image visu en base64 pour affichage optionnel
-        vis_b64 = ""
-        if result["image"] is not None:
-            _, buf = cv2.imencode(".jpg", result["image"])
-            vis_b64 = "data:image/jpeg;base64," + base64.b64encode(buf).decode("utf-8")
+        # Conversion squelette en base64 pour affichage
+        def to_b64(img):
+            _, buf = cv2.imencode(".jpg", img)
+            return "data:image/jpeg;base64," + base64.b64encode(buf).decode("utf-8")
 
         return {
-            "similarity": similarity,
-            "matches_found": result["match_count"],
-            "total_keypoints": result["kp1_count"] + result["kp2_count"],
-            "minutiae_img1": result["kp1_count"],
-            "minutiae_img2": result["kp2_count"],
+            "similarity": score,
+            "matches_found": matches,
+            "minutiae_img1": len(minutiae1[0]) + len(minutiae1[1]),
+            "minutiae_img2": len(minutiae2[0]) + len(minutiae2[1]),
             "verdict": verdict,
-            "message": f"{verdict} ({similarity}%)",
-            "visualization": vis_b64,
+            "decision": decision_code,
+            "threshold_used": threshold,
+            "visualization": to_b64(skel1), # On montre le squelette de l'img1
             "details": {
-                "algo": "ORB + RANSAC (Geometric Verification)",
-                "description": "Analyse des minuties assistée par vérification géométrique (invariante rotation/échelle)."
+                "algo": "Manual Pipeline (Preprocessing + CN + Triplet Validation)",
+                "steps": "Normalisation -> CLAHE -> Segmentation -> Filtrage -> Binarisation -> Morphologie -> Squelettisation -> Crossing Number -> Filtrage"
             }
         }
 
