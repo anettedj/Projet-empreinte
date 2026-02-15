@@ -16,8 +16,9 @@ DATASET_ROOT = "images/fvc"
 OUTPUT_DIR = "metrics_output"
 CONFIG_DIR = "config"
 DATASET_DIRS = [
-    "DB1_B", "DB3_B", "DB4_B", 
-    "DB1_B(1)", "DB2_B(1)", "DB3_B(1)", "DB4_B(1)", "DB3_Bj"
+    "DB1_B", "DB1_B (1)", "DB2_B (1)", 
+    "DB3_B", "DB3_B (1)", "DB3_Bj", 
+    "DB4_B", "DB4_B (1)"
 ]
 
 for d in [OUTPUT_DIR, CONFIG_DIR]:
@@ -142,7 +143,7 @@ def compute_metrics():
         
         with open(log_file, mode='w', newline='', encoding='utf-8') as csvfile:
             log_writer = csv.writer(csvfile)
-            log_writer.writerow(['Type', 'Database', 'Image 1', 'Image 2', 'Matches', 'Total Minutiae', 'Score (%)'])
+            log_writer.writerow(['Type', 'Database 1', 'Image 1', 'Database 2', 'Image 2', 'Matches', 'Total Minutiae', 'Score (%)'])
             
             print("\n🔄 Exécution des comparaisons (Authentiques)...")
             for img1, img2 in tqdm(genuine_pairs, desc="Authentiques"):
@@ -152,8 +153,9 @@ def compute_metrics():
                     score, matches = manual_match(m1, m2)
                     genuine_scores.append(score)
                     total_min = (len(m1[0])+len(m1[1])) + (len(m2[0])+len(m2[1]))
-                    db_name = os.path.basename(os.path.dirname(img1))
-                    log_writer.writerow(['Genuine', db_name, os.path.basename(img1), os.path.basename(img2), matches, total_min, score])
+                    db1 = os.path.basename(os.path.dirname(img1))
+                    db2 = os.path.basename(os.path.dirname(img2))
+                    log_writer.writerow(['Genuine', db1, os.path.basename(img1), db2, os.path.basename(img2), matches, total_min, score])
 
             print("\n🔄 Exécution des comparaisons (Imposteurs)...")
             for img1, img2 in tqdm(impostor_pairs, desc="Imposteurs"):
@@ -163,8 +165,9 @@ def compute_metrics():
                     score, matches = manual_match(m1, m2)
                     impostor_scores.append(score)
                     total_min = (len(m1[0])+len(m1[1])) + (len(m2[0])+len(m2[1]))
-                    db_name = os.path.basename(os.path.dirname(img1))
-                    log_writer.writerow(['Impostor', db_name, os.path.basename(img1), os.path.basename(img2), matches, total_min, score])
+                    db1 = os.path.basename(os.path.dirname(img1))
+                    db2 = os.path.basename(os.path.dirname(img2))
+                    log_writer.writerow(['Impostor', db1, os.path.basename(img1), db2, os.path.basename(img2), matches, total_min, score])
         
         # Sauvegarder scores pour re-plotting rapide
         with open(cache_file, "w") as f:

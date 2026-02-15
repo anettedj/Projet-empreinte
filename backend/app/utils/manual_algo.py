@@ -359,17 +359,27 @@ def manual_match(minutiae1, minutiae2, tolerance=8):
                 tx, ty = p1[0] - p2[0], p1[1] - p2[1]
                 
                 def count_valid(l1, lr2, ox, oy):
-                    m = 0
-                    u = [False] * len(lr2)
-                    for pt1 in l1:
-                        for k, pt2 in enumerate(lr2):
-                            if not u[k]:
-                                p2a = (pt2[0] + ox, pt2[1] + oy)
-                                if np.sqrt((pt1[0]-p2a[0])**2 + (pt1[1]-p2a[1])**2) < tolerance:
-                                    m += 1
-                                    u[k] = True
-                                    break
-                    return m
+                    if not l1 or not lr2: return 0
+                    pts1 = np.array(l1)
+                    pts2_shifted = np.array(lr2) + np.array([ox, oy])
+                    
+                    # Distance matrix using broadcasting
+                    # Shape: (len(pts1), len(pts2_shifted))
+                    diff = pts1[:, np.newaxis, :] - pts2_shifted[np.newaxis, :, :]
+                    dists = np.sqrt(np.sum(diff**2, axis=2))
+                    
+                    matches = 0
+                    mask = dists < tolerance
+                    used_in_2 = np.zeros(len(pts2_shifted), dtype=bool)
+                    
+                    for row in mask:
+                        allowed = row & ~used_in_2
+                        if np.any(allowed):
+                            matches += 1
+                            # Greedy match: take the first available
+                            idx = np.where(allowed)[0][0]
+                            used_in_2[idx] = True
+                    return matches
 
                 total = count_valid(term1, rot_term2, tx, ty) + count_valid(bif1, rot_bif2, tx, ty)
                 if total > best_matches:
