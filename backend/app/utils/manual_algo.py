@@ -45,27 +45,20 @@ def manual_median_filter(img, size=3):
 def manual_gabor(img):
     """
     Applique un filtre de Gabor pour renforcer les crêtes.
+    Utilisation de float32 pour accumuler sans saturation.
     """
-    # Paramètres de Gabor (à ajuster pour les empreintes)
-    ksize = 31
-    sigma = 5.0
-    theta = 0 # Orientation (on pourrait tester plusieurs)
-    lambd = 10.0
-    gamma = 0.5
-    psi = 0
+    gabor_accum = np.zeros_like(img, dtype=np.float32)
     
-    # On applique 4 filtres (0, 45, 90, 135 degrés) et on prend le max
-    filters = []
-    for theta in np.arange(0, np.pi, np.pi / 4):
-        kern = cv2.getGaborKernel((ksize, ksize), sigma, theta, lambd, gamma, psi, ktype=cv2.CV_32F)
-        filters.append(kern)
+    for i in range(16):
+        theta = np.pi * i / 16
+        # Paramètres optimaux selon le code précédent de l'utilisateur
+        kernel = cv2.getGaborKernel((31, 31), 4.0, theta, 10.0, 0.5, 0, ktype=cv2.CV_32F)
+        fimg = cv2.filter2D(img, cv2.CV_32F, kernel)
+        np.maximum(gabor_accum, fimg, gabor_accum)
         
-    accum = np.zeros_like(img, dtype=np.float32)
-    for kern in filters:
-        fimg = cv2.filter2D(img, cv2.CV_32F, kern)
-        np.maximum(accum, fimg, accum)
-        
-    return accum.astype(np.uint8)
+    # Normalisation pour éviter l'effet "écran de TV cassé" (overflow/saturation)
+    result = cv2.normalize(gabor_accum, None, 0, 255, cv2.NORM_MINMAX, cv2.CV_8U)
+    return result
 
 def manual_binarize(img, invert=True):
     """
@@ -296,19 +289,23 @@ def complete_preprocessing_pipeline(img_bgr):
     # 6. Filtrage du bruit (Médian)
     filtered = manual_median_filter(segmented)
     
-    # 7. Binarisation (Adaptative simplifiée)
-    binary = manual_binarize(filtered, invert=True)
+    # 7. Renforcement des crêtes (Gabor) - Améliore l'EER
+    gabor_enhanced = manual_gabor(filtered)
     
-    # 8. Nettoyage morphologique
+    # 8. Binarisation (Adaptative simplifiée)
+    # On utilise maintenant l'image renforcée par Gabor
+    binary = manual_binarize(gabor_enhanced, invert=True)
+    
+    # 9. Nettoyage morphologique
     cleaned = morphological_operations(binary)
     
-    # 9. Squelettisation (Zhang-Suen)
+    # 10. Squelettisation (Zhang-Suen)
     skeleton = manual_thinning(cleaned)
     
-    # 10. Extraction des minuties (Crossing Number)
+    # 11. Extraction des minuties (Crossing Number)
     raw_minutiae = extract_minutiae(skeleton)
     
-    # 11. Filtrage des fausses minuties (bords)
+    # 12. Filtrage des fausses minuties (bords)
     filtered_minutiae = filter_border_minutiae(raw_minutiae, skeleton.shape)
     
     return filtered_minutiae, skeleton

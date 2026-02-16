@@ -40,19 +40,19 @@ def process_fingerprint(img_bgr: np.ndarray, stage: str):
     filtered = manual_median_filter(segmented)
     if stage == "filtered": return filtered
 
-    # 6b. Gabor (Renforcement crêtes)
-    if stage == "gabor":
-        return manual_gabor(segmented)
+    # 7. Gabor (Renforcement crêtes)
+    gabor_enhanced = manual_gabor(filtered)
+    if stage == "gabor": return gabor_enhanced
 
-    # 7. Binaire
-    binary = manual_binarize(filtered, invert=True)
+    # 8. Binaire (Basé sur Gabor)
+    binary = manual_binarize(gabor_enhanced, invert=True)
     if stage == "binary": return binary
     
-    # 8. Morphologie
+    # 9. Morphologie
     morphed = morphological_operations(binary)
     if stage == "morphed": return morphed
 
-    # 9. Squelette
+    # 10. Squelette
     skel = manual_thinning(morphed)
     if stage == "skeleton": return skel
 

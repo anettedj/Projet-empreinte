@@ -63,10 +63,10 @@ def get_manual_minutiae(path):
 
 def compute_metrics():
     print(f"====================================================")
-    print(f"📊 CALCUL DES MÉTRIQUES BIOMÉTRIQUES (FAR/FRR)")
+    print(f" CALCUL DES MÉTRIQUES BIOMÉTRIQUES (FAR/FRR)")
     print(f"====================================================")
     
-    print(f"🔍 Scan des bases de données...")
+    print(f" Scan des bases de données...")
     files = []
     for d in DATASET_DIRS:
         d_path = os.path.join(DATASET_ROOT, d)
@@ -76,10 +76,10 @@ def compute_metrics():
             files.extend(found)
     
     if len(files) == 0:
-        print("❌ Aucune image .tif trouvée.")
+        print(" Aucune image .tif trouvée.")
         return
 
-    print(f"\n✅ Total images: {len(files)}")
+    print(f"\n Total images: {len(files)}")
     files.sort()
 
     # Grouper par dataset + personne
@@ -110,10 +110,10 @@ def compute_metrics():
         img2 = random.choice(persons[k2])
         impostor_pairs.append((img1, img2))
 
-    print(f"📈 Paires générées: {len(genuine_pairs)} Authentiques | {len(impostor_pairs)} Imposteurs")
+    print(f" Paires générées: {len(genuine_pairs)} Authentiques | {len(impostor_pairs)} Imposteurs")
     
     # Prétraitement
-    print("\n⚙️  Prétraitement des images (Pipeline 10 étapes)...")
+    print("\n  Prétraitement des images (Pipeline 10 étapes)...")
     try:
         count = 0
         for f in tqdm(files):
@@ -123,7 +123,7 @@ def compute_metrics():
                 save_minutiae_cache()
     finally:
         save_minutiae_cache()
-        print("\n💾 Cache des minuties sauvegardé (intermédiaire/final).")
+        print("\n Cache des minuties sauvegardé (intermédiaire/final).")
 
     # Comparaisons (avec cache disque et log détaillé)
     cache_file = os.path.join(CONFIG_DIR, "scores_cache.json")
@@ -132,7 +132,7 @@ def compute_metrics():
     import csv
     
     if os.path.exists(cache_file):
-        print("\n📂 Chargement des scores depuis le cache...")
+        print("\n Chargement des scores depuis le cache...")
         with open(cache_file, "r") as f:
             data = json.load(f)
             genuine_scores = data["genuine"]
@@ -145,7 +145,7 @@ def compute_metrics():
             log_writer = csv.writer(csvfile)
             log_writer.writerow(['Type', 'Database 1', 'Image 1', 'Database 2', 'Image 2', 'Matches', 'Total Minutiae', 'Score (%)'])
             
-            print("\n🔄 Exécution des comparaisons (Authentiques)...")
+            print("\n Exécution des comparaisons (Authentiques)...")
             for img1, img2 in tqdm(genuine_pairs, desc="Authentiques"):
                 m1 = get_manual_minutiae(img1)
                 m2 = get_manual_minutiae(img2)
@@ -157,7 +157,7 @@ def compute_metrics():
                     db2 = os.path.basename(os.path.dirname(img2))
                     log_writer.writerow(['Genuine', db1, os.path.basename(img1), db2, os.path.basename(img2), matches, total_min, score])
 
-            print("\n🔄 Exécution des comparaisons (Imposteurs)...")
+            print("\n Exécution des comparaisons (Imposteurs)...")
             for img1, img2 in tqdm(impostor_pairs, desc="Imposteurs"):
                 m1 = get_manual_minutiae(img1)
                 m2 = get_manual_minutiae(img2)
@@ -172,7 +172,7 @@ def compute_metrics():
         # Sauvegarder scores pour re-plotting rapide
         with open(cache_file, "w") as f:
             json.dump({"genuine": genuine_scores, "impostor": impostor_scores}, f)
-        print(f"✅ Log détaillé sauvegardé dans {log_file}")
+        print(f" Log détaillé sauvegardé dans {log_file}")
 
     # Statistiques
     genuine_scores = np.array(genuine_scores)
@@ -195,7 +195,7 @@ def compute_metrics():
     eer_value = (frr_list[eer_idx] + far_list[eer_idx]) / 2
 
     print(f"\n====================================================")
-    print(f"🎯 RÉSULTATS DE L'ANALYSE")
+    print(f" RÉSULTATS DE L'ANALYSE")
     print(f"====================================================")
     print(f"• Score Authentique Moyen: {np.mean(genuine_scores):.2f}%")
     print(f"• Score Imposteur Moyen:   {np.mean(impostor_scores):.2f}%")
@@ -246,7 +246,7 @@ def compute_metrics():
     
     plt.tight_layout()
     plt.savefig(os.path.join(OUTPUT_DIR, 'far_frr_curves.png'), dpi=150)
-    print(f"\n✅ Graphique détaillé sauvegardé dans {OUTPUT_DIR}")
+    print(f"\n Graphique détaillé sauvegardé dans {OUTPUT_DIR}")
 
 if __name__ == "__main__":
     compute_metrics()
